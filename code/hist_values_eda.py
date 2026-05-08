@@ -2,10 +2,6 @@ from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
 
-# TODO functionalize regression
-# TODO compartmentalize personal settings
-# TODO wage data and inflation
-
 rng = np.random.default_rng(7)
 
 # color-blind friendly bright qualitative colorscheme
@@ -22,49 +18,10 @@ tol_bright = {
 tol_bright = {name: (r/256, g/256, b/256) for name, (r, g, b) in tol_bright.items()}
 
 
-### currency data ###
-#import data
-uyu_usd_data = pd.read_csv('uyu_usd_history.csv')
-# drop empty rows
-uyu_usd_data = uyu_usd_data.dropna()
-
-# fill in missing usd_buy value by averaging values before and after
-row = int(uyu_usd_data.loc[uyu_usd_data['usd_buy'] == ' '].index.values[0])
-col = uyu_usd_data.columns.get_loc('usd_buy')
-uyu_usd_data.iloc[row, col] = str(
-        (float(uyu_usd_data.iloc[row-1, col]) + float(uyu_usd_data.iloc[row+1, col])) / 2
-    )
-
-# convert column datatypes
-uyu_usd_data['usd_buy'] = uyu_usd_data['usd_buy'].astype(float)
-uyu_usd_data['date'] = pd.to_datetime(uyu_usd_data['date'], yearfirst=True)
-
-
-# plot USD-UYU buy and sell prices over time
-fig, ax = plt.subplots()
-ax.plot(uyu_usd_data['date'], uyu_usd_data['usd_buy'], color=tol_bright['blue'], label='Buy price')
-ax.plot(uyu_usd_data['date'], uyu_usd_data['usd_sell'], color=tol_bright['green'], label='Sell price')
-ax.set_xlabel('Date')
-ax.set_ylabel('UYU per USD')
-ax.set_title('UYU-USD Conversion Rate Over Time')
-ax.legend()
-plt.show()
-
-# # plot USD-UYU buy/sell spread over time
-# fig, ax = plt.subplots()
-# ax.plot(uyu_usd_data['date'], uyu_usd_data['usd_sell'] - uyu_usd_data['usd_buy'], color=tol_bright['red'])
-# ax.set_xlabel('Date')
-# ax.set_ylabel('Buy/Sell Spread (Sell-Buy)')
-# ax.set_title('UYU-USD Buy/Sell Spread Over Time')
-# plt.show()
-
-
-
-
 ### indexed units data ###
 # source: https://www.gub.uy/instituto-nacional-estadistica/datos-y-estadisticas/estadisticas/series-historicas-ui
 # import data
-ui_data = pd.read_csv('ui_history.csv')
+ui_data = pd.read_csv('../data/ui_history.csv')
 
 # convert datatype of date column
 ui_data['date'] = pd.to_datetime(ui_data['date'])
@@ -142,13 +99,11 @@ ax.set_title('True and Predicted Values of Unidad Indexada Over Time')
 ax.legend()
 plt.show()
 
-#TODO: better fit might be piecewise - 2002 to 2020, 2020 to 2024, 2024 to present
-
 
 ### consumer price index (IPC) data ###
 # source: https://www.gub.uy/instituto-nacional-estadistica/datos-y-estadisticas/estadisticas/series-historicas-ipc-base-octubre-2022100
 # import data
-ipc_data = pd.read_csv('ipc_history_base2022.csv')
+ipc_data = pd.read_csv('../data/ipc_history_base2022.csv')
 
 # create date column set to first day of each month
 ipc_data['date'] = ipc_data.apply(
