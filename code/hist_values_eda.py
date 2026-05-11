@@ -17,30 +17,81 @@ tol_bright = {
     }
 tol_bright = {name: (r/256, g/256, b/256) for name, (r, g, b) in tol_bright.items()}
 
-
-### indexed units data ###
+##################################
+### Data Import and Processing ###
+##################################
 # source: https://www.gub.uy/instituto-nacional-estadistica/datos-y-estadisticas/estadisticas/series-historicas-ui
-# import data
+# import UI data
 ui_data = pd.read_csv('../data/ui_history.csv')
 
 # convert datatype of date column
 ui_data['date'] = pd.to_datetime(ui_data['date'])
 
-# plot UI values in UYU over time
-fig, ax = plt.subplots()
-ax.plot(ui_data['date'], ui_data['value'], color=tol_bright['cyan'])
-ax.set_xlabel('Date')
-ax.set_ylabel('Pesos per UI')
-ax.set_title('Value of Unidad Indexada Over Time')
-plt.show()
+
+# source: https://www.gub.uy/instituto-nacional-estadistica/datos-y-estadisticas/estadisticas/series-historicas-ipc-base-octubre-2022100
+# import IPC data
+ipc_data = pd.read_csv('../data/ipc_history_base2022.csv')
+
+# create date column set to first day of each month
+ipc_data['date'] = ipc_data.apply(
+    lambda row: f"{str(int(row['year']))}-{str(int(row['month'])).zfill(2)}-01",
+    axis=1
+    )
+ipc_data['date'] = pd.to_datetime(ipc_data['date'], yearfirst=True)
+
+# filter out months where UI doesn't exist
+ipc_data = ipc_data[ipc_data['date'] >= pd.to_datetime('2002-06-01', yearfirst=True)]
+ipc_data = ipc_data.reset_index(drop=True)
+ipc_data = ipc_data.reset_index().rename(columns={'index': 'months'})
+
+# normalize IPC so that June 1, 2002 IPC = 1
+new_ipc_base = ipc_data.loc[ipc_data['months'] == 0, 'ipc'].values[0]
+ipc_data['normed_ipc_value'] = ipc_data['ipc']/new_ipc_base
+
+# select only UI data from the first of the month each month
+first_uis = ui_data[ui_data['date'].dt.day == 1]
+
+# merge UI and IPC data to create dataframe of inflation indices
+inflation_idxs = pd.merge(ipc_data, first_uis, on='date')
+inflation_idxs = inflation_idxs[['date', 'value', 'normed_ipc_value']]
+inflation_idxs = inflation_idxs.rename(columns={'value': 'ui_value'})
 
 # create day column/variable that tracks number of days since first date
-first_day = ui_data.loc[0,'date']
-ui_data['days'] = ui_data['date'].apply(lambda x: (x-first_day).days)
-ui_data = ui_data[['days', 'value', 'date']]
+first_day = inflation_idxs.loc[0,'date']
+inflation_idxs['days'] = inflation_idxs['date'].apply(lambda x: (x-first_day).days)
+inflation_idxs = inflation_idxs[['date', 'days', 'ui_value', 'normed_ipc_value']]
+##################################
+##################################
+##################################
+
+
+
+##############################
+### Indexed Units Analysis ###
+##############################
+
+# plot normalized IPC and UI over time
+fig, ax = plt.subplots()
+ax.plot(inflation_idxs['date'], inflation_idxs['ui_value'], color=tol_bright['cyan'], label='UI')
+ax.plot(inflation_idxs['date'], inflation_idxs['normed_ipc_value'], color=tol_bright['yellow'], label='Normed IPC')
+ax.set_xlabel('Date')
+ax.set_ylabel('Index Value')
+ax.set_title('Indexed Units (UI) and Normalized Consumer Price Index (IPC) Over Time')
+ax.legend()
+plt.show()
+
+
+## Modeling Inflation (UI) ##
+# estimate annual inflation as smooth growth between first and last day values
+ui_matrix = inflation_idxs[['days', 'ui_value']].to_numpy()
+end_daily_inf_factor = (ui_matrix[-1, 1])**(1/(ui_matrix[-1, 0]))
+end_annual_inf_factor = (end_daily_inf_factor)**365.25
+print(f'Approximate annual inflation (UI, endpoints): {round((end_annual_inf_factor-1)*100, 4)}%')
+
+# create predictions based on smooth growth between endpoints
+end_preds = end_daily_inf_factor**(inflation_idxs['days'].to_numpy())
 
 # create data matrix for training exponential regression model
-ui_matrix = ui_data[['days', 'value']].to_numpy()
 m = ui_matrix.shape[0]
 ui_matrix = np.concatenate((np.ones((m, 1)), ui_matrix), axis=1)
 
@@ -67,94 +118,65 @@ right = np.dot(X_train.T, np.log(y_train))
 betas = np.dot(inv, right)
 a, b = np.exp(betas)
 ann_inf_factor = b**365.25
-print(f'Approximate annual inflation (UI): {round((ann_inf_factor-1)*100, 4)}%')
+print(f'Approximate annual inflation (UI, regression): {round((ann_inf_factor-1)*100, 4)}%')
 
 preds_train = np.exp(np.dot(X_train, betas))
 preds_test = np.exp(np.dot(X_test, betas))
 
-MSE_train = np.mean((y_train-preds_train)**2)
-MSE_test = np.mean((y_test-preds_test)**2)
+# reg_MSE_train = np.mean((y_train-preds_train)**2)
+# reg_MSE_test = np.mean((y_test-preds_test)**2)
 
-all_preds = np.zeros(m)
-all_preds[train_idxs] = preds_train
-all_preds[test_idxs] = preds_test
+reg_preds = np.zeros(m)
+reg_preds[train_idxs] = preds_train
+reg_preds[test_idxs] = preds_test
 
-ui_data['pred_value'] = all_preds
-ui_data = ui_data[['date', 'days', 'value', 'pred_value']]
+reg_MSE = np.mean((ui_vals-reg_preds)**2)
+end_MSE = np.mean((ui_vals-end_preds)**2)
 
+# add predicted UI values to dataframe 
+inflation_idxs['ui_end_pred'] = end_preds
+inflation_idxs['ui_reg_pred'] = reg_preds
+
+# plot residuals of models 
 fig, ax = plt.subplots()
-ax.scatter(ui_data['date'], ui_data['value'] - ui_data['pred_value'], 
-           s=3.0, color=tol_bright['cyan'])
+ax.scatter(inflation_idxs['date'], inflation_idxs['ui_value'] - inflation_idxs['ui_end_pred'], 
+           s=3.0, color=tol_bright['red'], label='Endpoint Model')
+ax.scatter(inflation_idxs['date'], inflation_idxs['ui_value'] - inflation_idxs['ui_reg_pred'], 
+           s=3.0, color=tol_bright['blue'], label='Regression Model')
 ax.set_xlabel('Date')
 ax.set_ylabel('Residual')
 ax.set_title('UI Model Residuals')
+ax.legend()
 plt.show()
 
 fig, ax = plt.subplots()
-ax.plot(ui_data['date'], ui_data['value'], color=tol_bright['cyan'], label='True')
-ax.plot(ui_data['date'], ui_data['pred_value'], color=tol_bright['purple'], label='Predicted')
+ax.plot(inflation_idxs['date'], inflation_idxs['ui_value'], 
+        color=tol_bright['cyan'], label='True Value')
+ax.plot(inflation_idxs['date'], inflation_idxs['ui_end_pred'], 
+        color=tol_bright['red'], label='Endpoint Prediction')
+ax.plot(inflation_idxs['date'], inflation_idxs['ui_reg_pred'], 
+        color=tol_bright['blue'], label='Regression Prediction')
 ax.set_xlabel('Date')
 ax.set_ylabel('UYU per UI')
 ax.set_title('True and Predicted Values of Unidad Indexada Over Time')
 ax.legend()
 plt.show()
 
+#############################
 
-### consumer price index (IPC) data ###
-# source: https://www.gub.uy/instituto-nacional-estadistica/datos-y-estadisticas/estadisticas/series-historicas-ipc-base-octubre-2022100
-# import data
-ipc_data = pd.read_csv('../data/ipc_history_base2022.csv')
-
-# create date column set to first day of each month
-ipc_data['date'] = ipc_data.apply(
-    lambda row: f"{str(int(row['year']))}-{str(int(row['month'])).zfill(2)}-01",
-    axis=1
-    )
-ipc_data['date'] = pd.to_datetime(ipc_data['date'], yearfirst=True)
-
-# filter out months where UI doesn't exist
-ipc_data = ipc_data[ipc_data['date'] >= pd.to_datetime('2002-06-01', yearfirst=True)]
-ipc_data = ipc_data.reset_index(drop=True)
-ipc_data = ipc_data.reset_index().rename(columns={'index': 'months'})
-
-# plot IPC over time
-fig, ax = plt.subplots()
-ax.plot(ipc_data['date'], ipc_data['ipc'], color=tol_bright['yellow'])
-ax.set_xlabel('Date')
-ax.set_ylabel('IPC')
-ax.set_title('Consumer Price Index (IPC) Over Time')
-plt.show()
-
-# normalize IPC so that June 1, 2002 IPC = 1
-new_ipc_base = ipc_data.loc[ipc_data['months'] == 0, 'ipc'].values[0]
-ipc_data['normed_ipc'] = ipc_data['ipc']/new_ipc_base
+##############################
+##############################
+##############################
 
 
-# select only UI data from the first of the month each month
-first_uis = ui_data[ui_data['date'].dt.day == 1]
+###########################################
+### Consumer Price Index (IPC) Analysis ###
+###########################################
 
-# merge into dataframe of inflation indices
-inflation_idxs = pd.merge(ipc_data, first_uis, on='date')
-inflation_idxs = inflation_idxs[['date', 'value', 'normed_ipc']]
-inflation_idxs = inflation_idxs.rename(columns={'value': 'ui'})
 
-# plot normalized IPC and UI over time
-fig, ax = plt.subplots()
-ax.plot(inflation_idxs['date'], inflation_idxs['ui'], color=tol_bright['cyan'], label='UI Value')
-ax.plot(inflation_idxs['date'], inflation_idxs['normed_ipc'], color=tol_bright['yellow'], label='Normed IPC Value')
-ax.set_xlabel('Date')
-ax.set_ylabel('Index Value')
-ax.set_title('Indexed Units (UI) and Consumer Price Index (IPC) Over Time')
-ax.legend()
-plt.show()
 
-fig, ax = plt.subplots()
-ax.scatter(inflation_idxs['ui'], inflation_idxs['normed_ipc'], color=tol_bright['purple'])
-ax.set_xlabel('UI')
-ax.set_ylabel('IPC')
-ax.set_title('Indexed Units (UI) vs. Consumer Price Index (IPC)')
-plt.show()
 
+## Modeling Inflation (IPC) ##
 ipc_matrix = ipc_data[['months', 'ipc']].to_numpy()
 m = ipc_matrix.shape[0]
 ipc_matrix = np.concatenate((np.ones((m, 1)), ipc_matrix), axis=1)
@@ -212,6 +234,10 @@ ax.set_title('True and Predicted Values of IPC Over Time')
 ax.legend()
 plt.show()
 
+
+###########################################
+###########################################
+###########################################
 
 
 
